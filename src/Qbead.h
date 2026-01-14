@@ -414,7 +414,7 @@ public:
     Serial.print(charging);
     Serial.print(", ");
     Serial.println(percentage);
-    blecharbatlvl.write(bat_buff, sizeof(uint8_t));
+    blecharbatlvl.notify(bat_buff, sizeof(uint8_t));
   }
 
   void clear() {
