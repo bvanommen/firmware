@@ -23,7 +23,7 @@
 #define QB_SY 0
 #define QB_SZ 0
 
-// add some missing definitions for the LSM6DS3 filter settings
+// LSM6DS3 filter settings
 #define LSM6DS3_ACC_GYRO_LPF2_XL_EN 0x80
 #define LSM6DS3_ACC_GYRO_LPF2_XL_CUT_ODR_BY_50 0x00
 #define LSM6DS3_ACC_GYRO_LPF2_XL_CUT_ODR_BY_100 0x20
@@ -261,9 +261,7 @@ void connect_callback(uint16_t conn_handle)
   Serial.println(central_name);
 }
 
-
 namespace Qbead {
-
 
 class Qbead {
 public:
@@ -296,7 +294,6 @@ public:
   static Qbead *singletoninstance; // we need a global singleton static instance because bluefruit callbacks do not support context variables -- thankfully this is fine because there is indeed only one Qbead in existence at any time
 
   LSM6DS3 imu;
-
   Adafruit_NeoPixel pixels;
 
   BLEService bleservice;
@@ -313,16 +310,12 @@ public:
   const uint8_t ix, iy, iz;
   const bool sx, sy, sz;
   float rbuffer[3];
-  float positionWhenTapped[3]; // internal
-  float xWhenTapped, yWhenTapped, zWhenTapped; // set when wasTapped is called
+  float whentapped_buffer[3];
+  float x_whentapped, y_whentapped, z_whentapped; // set when wasTapped is called
   float x, y, z, rx, ry, rz; // filtered and raw acc, in units of g
   float t_acc, p_acc;        // theta and phi according to gravity
   float T_imu;               // last update from the IMU
-
   bool tapped = false;
-  unsigned long last_tap = 0;
-  const unsigned long tap_debounce = 1000;
-  const float tap_threshold = 40.0;
 
   float t_ble, p_ble; // theta and phi as sent over BLE connection
   uint32_t c_ble = 0xffffff; // color as sent over BLE connection
@@ -344,25 +337,39 @@ public:
     Serial.println(singletoninstance->p_ble);
   }
 
+  void setupIMUTapDetection(){
+    // Turn on the accelerometer
+    // Acc = 416Hz (High-Performance mode)
+    imu.writeRegister(LSM6DS3_ACC_GYRO_CTRL1_XL, LSM6DS3_ACC_GYRO_ODR_XL_416Hz);
 
-  void setup_imu_for_tap_detection(){
-    imu.writeRegister(LSM6DS3_ACC_GYRO_CTRL1_XL, LSM6DS3_ACC_GYRO_ODR_XL_416Hz); //* Acc = 416Hz (High-Performance mode)// Turn on the accelerometer
-    imu.writeRegister(LSM6DS3_ACC_GYRO_CTRL2_G, LSM6DS3_ACC_GYRO_ODR_G_POWER_DOWN); // disable gyroscope to save power
-    // enable XYZ axis tap detection
-    uint8_t TAP_CFG_SETTING = LSM6DS3_ACC_GYRO_TIMER_EN_ENABLED | LSM6DS3_ACC_GYRO_TAP_Z_EN_ENABLED
-    | LSM6DS3_ACC_GYRO_TAP_Y_EN_ENABLED | LSM6DS3_ACC_GYRO_TAP_X_EN_ENABLED;
-    imu.writeRegister(LSM6DS3_ACC_GYRO_TAP_CFG1,TAP_CFG_SETTING); // Enable tap detection in X,Y,Z
-    imu.writeRegister(LSM6DS3_ACC_GYRO_INT_DUR2, LSM6DS3_ACC_GYRO_SHOCK_MASK&0b11);// Set shock time window.
+    // Optionally, disable gyroscope to save power
+    //imu.writeRegister(LSM6DS3_ACC_GYRO_CTRL2_G, LSM6DS3_ACC_GYRO_ODR_G_POWER_DOWN);
+
+    // Enable tap detection in X,Y,Z:
+    uint8_t TAP_CFG_SETTING = LSM6DS3_ACC_GYRO_TIMER_EN_ENABLED | LSM6DS3_ACC_GYRO_TAP_Z_EN_ENABLED | LSM6DS3_ACC_GYRO_TAP_Y_EN_ENABLED | LSM6DS3_ACC_GYRO_TAP_X_EN_ENABLED;
+    imu.writeRegister(LSM6DS3_ACC_GYRO_TAP_CFG1,TAP_CFG_SETTING);
+
+    // Set shock time window:
+    imu.writeRegister(LSM6DS3_ACC_GYRO_INT_DUR2, LSM6DS3_ACC_GYRO_SHOCK_MASK&0b11);
+
+    // Set tap threshold:
     uint8_t thrshold_setting = 8; // number between 0 and 31
-    imu.writeRegister(LSM6DS3_ACC_GYRO_TAP_THS_6D, thrshold_setting); // set tap threshold
-    imu.writeRegister(LSM6DS3_ACC_GYRO_WAKE_UP_THS, LSM6DS3_ACC_GYRO_SINGLE_DOUBLE_TAP_DOUBLE_TAP); // only do single tap detection. Seems like the naming is incorrect?
-    imu.writeRegister(LSM6DS3_ACC_GYRO_MD1_CFG, LSM6DS3_ACC_GYRO_INT1_SINGLE_TAP_ENABLED); // single-tap interrupt driven to pin 1
-    imu.writeRegister(LSM6DS3_ACC_GYRO_CTRL8_XL, LSM6DS3_ACC_GYRO_LPF2_XL_EN | LSM6DS3_ACC_GYRO_LPF2_XL_CUT_ODR_BY_400); // enable low pass filter and set cutoff frequency to datarate/400
+    imu.writeRegister(LSM6DS3_ACC_GYRO_TAP_THS_6D, thrshold_setting);
 
-    // setup interrupt callback
+    // Only do single tap detection. Seems like the naming is incorrect?
+    imu.writeRegister(LSM6DS3_ACC_GYRO_WAKE_UP_THS, LSM6DS3_ACC_GYRO_SINGLE_DOUBLE_TAP_DOUBLE_TAP);
+
+    // Single-tap interrupt driven to pin 1
+    imu.writeRegister(LSM6DS3_ACC_GYRO_MD1_CFG, LSM6DS3_ACC_GYRO_INT1_SINGLE_TAP_ENABLED);
+
+    // Enable low pass filter and set cutoff frequency to datarate/400
+    imu.writeRegister(LSM6DS3_ACC_GYRO_CTRL8_XL, LSM6DS3_ACC_GYRO_LPF2_XL_EN | LSM6DS3_ACC_GYRO_LPF2_XL_CUT_ODR_BY_400);
+
+    // Setup interrupt callback
     pinMode(PIN_LSM6DS3TR_C_INT1, INPUT);
     attachInterrupt(digitalPinToInterrupt(PIN_LSM6DS3TR_C_INT1), tap_isr, RISING);
-    Serial.print("Enabled IMU interrupt!");
+
+    Serial.println("Enabled IMU interrupt!");
   }
 
   void begin() {
@@ -381,7 +388,7 @@ public:
       Serial.println("[ERROR]{IMU} IMU failed to initialize");
     }
 
-    setup_imu_for_tap_detection();
+    setupIMUTapDetection();
 
     // BLE Peripheral service setup
     Bluefruit.begin(QB_MAX_PRPH_CONNECTION, 0);
@@ -562,31 +569,33 @@ public:
     tapped = false;
     // save tapped location
     if (wasTapped){
-      xWhenTapped = positionWhenTapped[ix];
-      yWhenTapped = positionWhenTapped[iy];
-      zWhenTapped = positionWhenTapped[iz];
+      x_whentapped = whentapped_buffer[ix];
+      y_whentapped = whentapped_buffer[iy];
+      z_whentapped = whentapped_buffer[iz];
     }
     return wasTapped;
   }
 
   static void tap_isr()
   {
-    // This function is called when the imu triggers an interrupt. That is: when a tap is detected!
-    // we have to refer to the singletoninstance if the qbead here, because the one and only qbead object does not
-    // exist when this isr is defined.
-    // readout XYZ immediately
-    // we could choose to only readout XYZ when we haven't yet processed the last tap
-    // for now, let's just update the position everytime we tap
-    singletoninstance->positionWhenTapped[0] = singletoninstance->imu.readFloatAccelX();
-    singletoninstance->positionWhenTapped[1] = singletoninstance->imu.readFloatAccelY();
-    singletoninstance->positionWhenTapped[2] = singletoninstance->imu.readFloatAccelZ();
+    // This function is called when the IMU triggers an interrupt. That is: when a tap is detected!
+    // We have to refer to the singletoninstance of the qbead here,
+    // because the one and only qbead object does not exist when this isr is defined.
+    // Then readout XYZ immediately
+    // We could choose to only readout XYZ when we haven't yet processed the last tap,
+    // but for now, let's just update the position everytime we tap.
+    singletoninstance->whentapped_buffer[0] = singletoninstance->imu.readFloatAccelX();
+    singletoninstance->whentapped_buffer[1] = singletoninstance->imu.readFloatAccelY();
+    singletoninstance->whentapped_buffer[2] = singletoninstance->imu.readFloatAccelZ();
     singletoninstance->tapped = true;
-
-//    Serial.println("TAP registerred!");
-//    Serial.println("TAP INTERRUPT!");
-    //
+    for (uint16_t conn_hdl=0; conn_hdl < QB_MAX_PRPH_CONNECTION; conn_hdl++)
+    {
+      if ( Bluefruit.connected(conn_hdl) && singletoninstance->blecharacc.notifyEnabled(conn_hdl) )
+      {
+        singletoninstance->blechartap.notify(singletoninstance->whentapped_buffer, 3*sizeof(float));
+      }
+    }
   }
-
 
   void readIMU(bool print=true) {
     rbuffer[0] = imu.readFloatAccelX();
@@ -643,24 +652,14 @@ public:
     rbuffer[2] = z;
     blecharacc.write(rbuffer, 3*sizeof(float));
 
-//    tapped = abs(rawmag2-1) > tap_threshold && millis()-last_tap>tap_debounce;
-//
-//    if (tapped)
-//    {
-//      last_tap = millis();
-//      blecharacc.write(rbuffer, 3*sizeof(float));
-//    }
-
     for (uint16_t conn_hdl=0; conn_hdl < QB_MAX_PRPH_CONNECTION; conn_hdl++)
     {
       if ( Bluefruit.connected(conn_hdl) && blecharacc.notifyEnabled(conn_hdl) )
       {
         blecharacc.notify(rbuffer, 3*sizeof(float));
-        tapped && blechartap.notify(rbuffer, 3*sizeof(float));
       }
     }
   }
-
 
   void startBLEadv(void)
   {
